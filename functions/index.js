@@ -1,5 +1,7 @@
+'use strict';
+
 // The Cloud Functions for Firebase SDK to create Cloud Functions and set up triggers.
-const functions = require('firebase-functions');
+const functions = require('firebase-functions/v2');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -7,15 +9,16 @@ const spawn = require('child-process-promise').spawn;
 const exec = require('child-process-promise').exec;
 // The Firebase Admin SDK to access Firestore.
 const admin = require('firebase-admin');
+const convert = require('heic-convert');
+const promisify = require('util.promisify');
 
 admin.initializeApp();
+functions.setGlobalOptions({region: "europe-west4", maxInstances: 2});
 
-
-
-exports.imageConverter = functions.storage.object().onFinalize(async (object) => {
-    const fileBucket = object.bucket; // The Storage bucket that contains the file.
-    const filePath = object.name; // File path in the bucket.
-    const contentType = object.contentType; // File content type.
+exports.image = functions.storage.onObjectFinalized({memory: "1GiB", cpu: 0.5}, async (event) => {
+    const fileBucket = event.data.bucket; // The Storage bucket that contains the file.
+    const filePath = event.data.name; // File path in the bucket.
+    const contentType = event.data.contentType; // File content type.
 
     // Exit if this is triggered on a file that is not an image.
     if (!contentType.startsWith('image/')) {
@@ -32,10 +35,22 @@ exports.imageConverter = functions.storage.object().onFinalize(async (object) =>
     // [START ImageConversion]
     // Download file from bucket.
     const bucket = admin.storage().bucket(fileBucket);
-    const tempFilePath = path.join(os.tmpdir(), fileName);
+    let tempFilePath = path.join(os.tmpdir(), fileName);
 
     await bucket.file(filePath).download({ destination: tempFilePath });
     functions.logger.log('Image downloaded locally to', tempFilePath);
+
+    if (fileName.toUpperCase().endsWith('.HEIC')) {
+        functions.logger.log('HEIC image begin pre-processing');
+        const inputBuffer = await promisify(fs.readFile)(tempFilePath);
+        const outputBuffer = await convert({
+            buffer: inputBuffer, // the HEIC file buffer
+            format: 'JPEG',      // output format
+            quality: 1           // the jpeg compression quality, between 0 and 1
+          });
+          await promisify(fs.writeFile)(changeExtension(tempFilePath, ".jpeg"), outputBuffer);
+          tempFilePath = changeExtension(tempFilePath, ".jpeg");
+    }
 
     // Generate a webp using ImageMagick.
     const child = spawn('convert', [tempFilePath, '-quality', '25', '-define', 'webp:lossless=true', tempFilePath]);
@@ -90,59 +105,59 @@ exports.imageConverter = functions.storage.object().onFinalize(async (object) =>
     // [END ImageConversion]
 });
 
-exports.videoConverter = functions.runWith({ timeoutSeconds: 500, memory: '1GB' }).storage.object().onFinalize(async (object) => {
-    const fileBucket = object.bucket; // The Storage bucket that contains the file.
-    const filePath = object.name; // File path in the bucket.
-    const contentType = object.contentType; // File content type.
+// webm is not supported by ios
+// exports.video = functions.storage.onObjectFinalized( async (event) => {
+//     const fileBucket = event.data.bucket;; // The Storage bucket that contains the file.
+//     const filePath = event.data.name; // File path in the bucket.
+//     const contentType = event.data.contentType; // File content type.
 
-    // Exit if this is triggered on a file that is not an video.
-    if (!contentType.startsWith('video/')) {
-        return functions.logger.log('This is not an video.');
-    }
+//     // Exit if this is triggered on a file that is not an video.
+//     if (!contentType.startsWith('video/')) {
+//         return functions.logger.log('This is not an video.');
+//     }
 
-    // Get the file name.
-    const fileName = path.basename(filePath);
-    // Exit if the video is already a .webm
-    if (fileName.endsWith('.webm')) {
-        return functions.logger.log('Already a in correct format.');
-    }
+//     // Get the file name.
+//     const fileName = path.basename(filePath);
+//     // Exit if the video is already a .webm
+//     if (fileName.endsWith('.webm')) {
+//         return functions.logger.log('Already a in correct format.');
+//     }
 
-    // [START VideoConversion]
-    // Download file from bucket.
-    const bucket = admin.storage().bucket(fileBucket);
-    const tempFilePath = path.join(os.tmpdir(), fileName);
-    await bucket.file(filePath).download({ destination: tempFilePath });
-    functions.logger.log('Video downloaded locally to', tempFilePath);
+//     // [START VideoConversion]
+//     // Download file from bucket.
+//     const bucket = admin.storage().bucket(fileBucket);
+//     const tempFilePath = path.join(os.tmpdir(), fileName);
+//     await bucket.file(filePath).download({ destination: tempFilePath });
+//     functions.logger.log('Video downloaded locally to', tempFilePath);
 
 
-    const output = changeExtension(path.join(os.tmpdir(), "movie"), ".webm")
-    const logFolder = path.join(os.tmpdir(), "log");
-    functions.logger.log('output will be', output);
+//     const output = changeExtension(path.join(os.tmpdir(), "movie"), ".webm")
+//     const logFolder = path.join(os.tmpdir(), "log");
+//     functions.logger.log('output will be', output);
 
-    const pass1 = `ffmpeg -i "${tempFilePath}" -passlogfile ${logFolder} -b:v 0 -crf 45 -pass 1 -an -f webm -y /dev/null`
-    const pass2 = `ffmpeg -i "${tempFilePath}" -passlogfile ${logFolder} -b:v 0 -crf 45 -pass 2 -speed 8 -y ${output}`
-    await exec(pass1);
-    functions.logger.log('pass 1 completed', tempFilePath);
-    await exec(pass2);
-    functions.logger.log('pass 2 completed', tempFilePath);
-    functions.logger.log('webm created at', output);
+//     const pass1 = `ffmpeg -i "${tempFilePath}" -passlogfile ${logFolder} -b:v 0 -crf 45 -pass 1 -an -f webm -y /dev/null`
+//     const pass2 = `ffmpeg -i "${tempFilePath}" -passlogfile ${logFolder} -b:v 0 -crf 45 -pass 2 -speed 8 -y ${output}`
+//     await exec(pass1);
+//     functions.logger.log('pass 1 completed', tempFilePath);
+//     await exec(pass2);
+//     functions.logger.log('pass 2 completed', tempFilePath);
+//     functions.logger.log('webm created at', output);
 
-    const convertedFilePath = path.join(path.dirname(filePath), fileName);
+//     const convertedFilePath = path.join(path.dirname(filePath), fileName);
 
-    // Uploading the webp.
-    await bucket.upload(output, {
-        destination: changeExtension(convertedFilePath, ".webm"),
-    });
+//     // Uploading the webp.
+//     await bucket.upload(output, {
+//         destination: changeExtension(convertedFilePath, ".webm"),
+//     });
 
-    if (path.dirname(filePath) === "quick_content") {
-        await admin.storage().bucket().file(filePath).delete();
-    }
+//     if (path.dirname(filePath) === "quick_content") {
+//         await admin.storage().bucket().file(filePath).delete();
+//     }
 
-    // Once the webm has been uploaded delete the local file to free up disk space.
-    return fs.unlinkSync(output) && fs.unlinkSync(tempFilePath);
-    // [END VideoConversion]
-});
-
+//     // Once the webm has been uploaded delete the local file to free up disk space.
+//     return fs.unlinkSync(output) && fs.unlinkSync(tempFilePath);
+//     // [END VideoConversion]
+// });
 
 function changeExtension(file, extension) {
     const basename = path.basename(file, path.extname(file))
